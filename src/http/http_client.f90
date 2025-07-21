@@ -91,15 +91,11 @@ contains
         type(client_type) :: client
         integer :: i
 
-        print *, 'DEBUG: Entering new_request with URL: ', url
-
         ! setting request url
         request%url = url
-        print *, 'DEBUG: Set request URL'
 
         ! Set default HTTP method.
         request%method = optval(method, 1)
-        print *, 'DEBUG: Set method to: ', request%method
         
         ! Set request header
         if (present(header)) then
@@ -137,11 +133,8 @@ contains
         end if
 
         ! Populates the response 
-        print *, 'DEBUG: Creating client'
         client = client_type(request=request)
-        print *, 'DEBUG: Client created, about to get response'
         response = client%client_get_response()
-        print *, 'DEBUG: Response received, exiting new_request'
     end function new_request
 
     function new_client(request) result(client)
@@ -171,124 +164,84 @@ contains
         type(c_ptr) :: curl_ptr, header_list_ptr
         integer :: rc, i
         
-        print *, 'DEBUG: Entering client_get_response'
-        
         curl_ptr = c_null_ptr
         header_list_ptr = c_null_ptr
         
-        ! Initialize response completely
+        ! Initialize response
         response%ok = .true.
         response%status_code = 0
         response%content_length = 0
-        if (allocated(response%content)) deallocate(response%content)
-        if (allocated(response%method)) deallocate(response%method)
-        if (allocated(response%err_msg)) deallocate(response%err_msg)
-        if (allocated(response%url)) deallocate(response%url)
-        if (allocated(response%header)) deallocate(response%header)
         response%url = this%request%url
-        print *, 'DEBUG: Set response URL to: ', this%request%url
-        print *, 'DEBUG: Initialized response with status_code=', response%status_code
         
-        print *, 'DEBUG: About to call curl_easy_init()'
         curl_ptr = curl_easy_init()
-        print *, 'DEBUG: curl_easy_init() completed'
       
         if (.not. c_associated(curl_ptr)) then
-            print *, 'DEBUG: curl_easy_init() failed - curl_ptr not associated'
             response%ok = .false.
             response%err_msg = "The initialization of a new easy handle using the 'curl_easy_init()'&
             & function failed. This can occur due to insufficient memory available in the system. &
             & Additionally, if libcurl is not installed or configured properly on the system"
             return
         end if
-        print *, 'DEBUG: curl_easy_init() successful'
 
         ! setting request URL
-        print *, 'DEBUG: Setting URL: ', this%request%url
         rc = curl_easy_setopt(curl_ptr, CURLOPT_URL, this%request%url)
-        print *, 'DEBUG: URL set, rc=', rc
 
         ! setting request method
-        print *, 'DEBUG: Setting method: ', this%request%method
         rc = set_method(curl_ptr, this%request%method, response)
-        print *, 'DEBUG: Method set, rc=', rc
 
         ! setting request timeout
-        print *, 'DEBUG: Setting timeout: ', this%request%timeout
         rc = set_timeout(curl_ptr, this%request%timeout)
-        print *, 'DEBUG: Timeout set, rc=', rc
 
         ! setting request body
-        print *, 'DEBUG: Setting body'
         rc = set_body(curl_ptr, this%request)
-        print *, 'DEBUG: Body set, rc=', rc
 
         ! setting request authentication
-        print *, 'DEBUG: Setting auth'
         rc = set_auth(curl_ptr, this%request)
-        print *, 'DEBUG: Auth set, rc=', rc
 
         ! prepare headers for curl
-        print *, 'DEBUG: Preparing headers'
         call prepare_request_header_ptr(header_list_ptr, this%request%header)
-        print *, 'DEBUG: Headers prepared'
 
         ! setting request header
-        print *, 'DEBUG: Setting header list'
         rc = curl_easy_setopt(curl_ptr, CURLOPT_HTTPHEADER, header_list_ptr);
-        print *, 'DEBUG: Header list set, rc=', rc
 
         ! setting callback for writing received data
-        print *, 'DEBUG: Setting write callback'
         rc = curl_easy_setopt(curl_ptr, CURLOPT_WRITEFUNCTION, c_funloc(client_response_callback))
-        print *, 'DEBUG: Write callback set, rc=', rc
 
         ! setting response content pointer to write callback
-        print *, 'DEBUG: Setting write data pointer'
         rc = curl_easy_setopt(curl_ptr, CURLOPT_WRITEDATA, c_loc(response))
-        print *, 'DEBUG: Write data pointer set, rc=', rc
 
         ! setting callback for writing received headers
-        print *, 'DEBUG: Setting header callback'
         rc = curl_easy_setopt(curl_ptr, CURLOPT_HEADERFUNCTION, c_funloc(client_header_callback))
-        print *, 'DEBUG: Header callback set, rc=', rc
 
         ! setting response header pointer to write callback
-        print *, 'DEBUG: Setting header data pointer'
         rc = curl_easy_setopt(curl_ptr, CURLOPT_HEADERDATA, c_loc(response))
-        print *, 'DEBUG: Header data pointer set, rc=', rc
 
         ! Send request.
-        print *, 'DEBUG: About to perform HTTP request'
         rc = curl_easy_perform(curl_ptr)
-        print *, 'DEBUG: HTTP request completed, rc=', rc
         
         if (rc /= CURLE_OK) then
-            print *, 'DEBUG: curl_easy_perform failed with rc=', rc
             response%ok = .false.
             response%err_msg = curl_easy_strerror(rc)
-        else
-            print *, 'DEBUG: curl_easy_perform successful'
         end if
         
-        ! setting response status_code - avoid curl_easy_getinfo for now
-        print *, 'DEBUG: Skipping status code retrieval (segfault workaround)'
-        response%status_code = 200  ! Default to success if curl_easy_perform succeeded
-        print *, 'DEBUG: Set default status code to:', response%status_code
+        ! FIXME: curl_easy_getinfo with CURLINFO_RESPONSE_CODE causes segfault on macOS ARM64
+        ! This appears to be a platform-specific issue with the fortran-curl bindings
+        ! The status_code field has been changed to integer(c_long) to match curl's expectation,
+        ! but the segfault persists. This needs further investigation.
+        !
+        ! Temporary workaround: assume 200 status for successful requests
+        ! To re-enable actual status code retrieval, uncomment the following line:
+        ! rc = curl_easy_getinfo(curl_ptr, CURLINFO_RESPONSE_CODE, response%status_code)
         
-        print *, 'DEBUG: Cleaning up curl handle'
-        call curl_easy_cleanup(curl_ptr)
-        print *, 'DEBUG: Cleanup completed'
-        
-        ! Ensure response is marked as successful if no errors
-        if (rc == CURLE_OK .and. response%status_code >= 200 .and. response%status_code < 300) then
+        if (rc == CURLE_OK) then
+            response%status_code = 200
             response%ok = .true.
-        else if (response%status_code >= 400) then
+        else
+            response%status_code = 0
             response%ok = .false.
-            if (.not. allocated(response%err_msg)) then
-                response%err_msg = 'HTTP error'
-            end if
         end if
+        
+        call curl_easy_cleanup(curl_ptr)
       
     end function client_get_response
     
@@ -602,56 +555,32 @@ contains
         type(response_type), pointer :: response 
         character(len=:), allocatable :: buf
       
-        print *, 'DEBUG: Entering client_response_callback, size=', size, ' nmemb=', nmemb
         client_response_callback = int(0, kind=c_size_t)
       
         ! Are the passed C pointers associated?
-        if (.not. c_associated(ptr)) then
-            print *, 'DEBUG: ptr not associated in response callback'
-            return
-        end if
-        if (.not. c_associated(client_data)) then
-            print *, 'DEBUG: client_data not associated in response callback'
-            return
-        end if
-        print *, 'DEBUG: Both pointers associated in response callback'
+        if (.not. c_associated(ptr)) return
+        if (.not. c_associated(client_data)) return
       
         ! Convert C pointer to Fortran pointer.
-        print *, 'DEBUG: Converting client_data to Fortran pointer'
         call c_f_pointer(client_data, response)
-        print *, 'DEBUG: c_f_pointer completed'
-        
-        ! Safely initialize response content
-        if (.not. allocated(response%content)) then
-            response%content = ''
-            print *, 'DEBUG: Response content allocated and initialized'
-        end if
-        print *, 'DEBUG: Response content ready'
+        if (.not. allocated(response%content)) response%content = ''
       
         ! Convert C pointer to Fortran allocatable character.
-        print *, 'DEBUG: Converting ptr to string'
         call c_f_str_ptr(ptr, buf, nmemb)
-        print *, 'DEBUG: c_f_str_ptr completed'
-        if (.not. allocated(buf)) then
-            print *, 'DEBUG: buf not allocated after c_f_str_ptr'
+        if (.not. allocated(buf)) return
+        
+        ! Check for reasonable buffer size to prevent memory issues
+        if (nmemb > 10000000) then  ! 10MB limit
+            deallocate(buf)
             return
         end if
         
-        ! Check for reasonable buffer size
-        if (nmemb > 1000000) then
-            print *, 'DEBUG: Warning - very large buffer size:', nmemb
-        end if
-        
-        print *, 'DEBUG: Appending buf to response content'
         response%content = response%content // buf
-        print *, 'DEBUG: Safely deallocating buf'
-        if (allocated(buf)) deallocate (buf)
+        deallocate (buf)
         response%content_length = response%content_length + nmemb
-        print *, 'DEBUG: Updated content length to', response%content_length
         
         ! Return number of received bytes.
         client_response_callback = nmemb
-        print *, 'DEBUG: Exiting client_response_callback'
 
     end function client_response_callback
 

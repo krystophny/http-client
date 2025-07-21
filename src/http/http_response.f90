@@ -8,6 +8,7 @@ module http_response
     !!> represents an **HTTP response** from a web server.
 
     use, intrinsic :: iso_fortran_env, only: int64
+    use, intrinsic :: iso_c_binding, only: c_long
     use http_pair, only: pair_type, get_pair_value
     use stdlib_string_type, only: string_type, to_lower, operator(==), char
 
@@ -27,7 +28,7 @@ module http_response
             !! The HTTP method of the request.
         character(len=:), allocatable :: err_msg
             !! The Error message if the response was not successful.
-        integer :: status_code = 0
+        integer(c_long) :: status_code = 0
             !! The HTTP status code of the response
         integer(kind=int64) :: content_length = 0
             !! length of the response content.
